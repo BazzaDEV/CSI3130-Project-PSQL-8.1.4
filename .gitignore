@@ -56,9 +56,9 @@ config/
 configure
 configure.in
 contrib/
-createplan.c
+/createplan.c
 doc/
-execnodes.h
-nodeHash.c
-nodeHashjoin.c
+/execnodes.h
+/nodeHash.c
+/nodeHashjoin.c
 postgres-env/
