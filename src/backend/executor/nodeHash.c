@@ -40,14 +40,14 @@ static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
  *		stub for pro forma compliance
  * ----------------------------------------------------------------
  */
-/*
+
 TupleTableSlot *
 ExecHash(HashState *node)
 {
 	elog(ERROR, "Hash node does not support ExecProcNode call convention");
 	return NULL;
 }
-*/
+
 /*GB : begin*/
 Node *
 MultiExecHash(HashState *node)
