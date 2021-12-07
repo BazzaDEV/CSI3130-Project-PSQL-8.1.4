@@ -32,35 +32,36 @@ static TupleTableSlot *ExecHashJoinGetSavedTuple(HashJoinState *hjstate,
 						  TupleTableSlot *tupleSlot);
 static int	ExecHashJoinNewBatch(HashJoinState *hjstate);
 
-
 /* ----------------------------------------------------------------
  *		ExecHashJoin
  *
- *		This function implements the Symmetric Hashjoin algorithm.
+ *		This function implements the Hybrid Hashjoin algorithm.
  *
+ *		Note: the relation we build hash table on is the "inner"
+ *			  the other one is "outer".
  * ----------------------------------------------------------------
  */
-// CSI3130
-TupleTableSlot *
+TupleTableSlot *				/* return: a tuple or NULL */
 ExecHashJoin(HashJoinState *node)
 {
 	EState	   *estate;
-	PlanState  *outerNode;
-	HashState  *inner_hashNode;	//CSI3130
-	HashState  *outer_hashNode; //CSI3130
+	HashState  *outerHashNode; //CSI3130
+	HashState  *innerHashNode; //CSI3130
 	List	   *joinqual;
 	List	   *otherqual;
+
 	TupleTableSlot *inntuple;
-    TupleTableSlot *outtuple;	//CSI3130
+	TupleTableSlot *outtuple; //CSI3130
 	ExprContext *econtext;
 	ExprDoneCond isDone;
-	HashJoinTable inner_hashtable;	//CSI3130
-	HashJoinTable outer_hashtable;  //CSI3130
+	HashJoinTable innerHashtable; //CSI3130
+	HashJoinTable outerHashtable; //CSI3130
+	
 	HeapTuple	curtuple;
+	TupleTableSlot *innerTupleSlot; //CSI3130
 	TupleTableSlot *outerTupleSlot;
-	TupleTableSlot *innerTupleSlot;	//CSI3130
-	uint32		hashvalue;
-	int			batchno;
+	uint32	hashvalue;
+	int	batchno;
 
 	/*
 	 * get information from HashJoin node
@@ -68,14 +69,14 @@ ExecHashJoin(HashJoinState *node)
 	estate = node->js.ps.state;
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
-	inner_hashNode = (HashState *) innerPlanState(node); //CSI3130
-	outer_hashNode = (HashState *) outerPlanState(node); //CSI3130
+	innerHashNode = (HashState *) innerPlanState(node); //CSI3130
+	outerHashNode = (HashState *) outerPlanState(node); //CSI3130
 
 	/*
 	 * get information from HashJoin state
 	 */
-	inner_hashtable = node->inner_hj_HashTable; //CSI3130
-	outer_hashtable = node->outer_hj_HashTable; //CSI3130
+	innerHashtable = node->hj_InnerHashTable; //CSI3130
+	outerHashtable = node->hj_OuterHashTable; //CSI3130
 	econtext = node->js.ps.ps_ExprContext;
 
 	/*
@@ -83,7 +84,8 @@ ExecHashJoin(HashJoinState *node)
 	 * tuple (because there is a function-returning-set in the projection
 	 * expressions).  If so, try to project another one.
 	 */
-	/*	CSI3130
+	
+	/* CSI 3130 COMMENTED OUT ORIGINAL CODE
 	if (node->js.ps.ps_TupFromTlist)
 	{
 		TupleTableSlot *result;
@@ -91,10 +93,11 @@ ExecHashJoin(HashJoinState *node)
 		result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
 		if (isDone == ExprMultipleResult)
 			return result;
-		// Done with that source tuple... 
+	
 		node->js.ps.ps_TupFromTlist = false;
-	}
+	} 
 	*/
+
 	/*
 	 * If we're doing an IN join, we want to return at most one row per outer
 	 * tuple; so we can stop scanning the inner scan if we matched on the
@@ -113,8 +116,7 @@ ExecHashJoin(HashJoinState *node)
 	/*
 	 * if this is the first call, build the hash table for inner relation
 	 */
-	// CSI3130
-	if (inner_hashtable == NULL && outer_hashtable == NULL)
+	if (innerHashtable == NULL && outerHashtable == NULL) //CSI3130
 	{
 		/*
 		 * If the outer relation is completely empty, we can quit without
@@ -136,12 +138,12 @@ ExecHashJoin(HashJoinState *node)
 		 * outer plan node.  If we succeed, we have to stash it away for later
 		 * consumption by ExecHashJoinOuterGetTuple.
 		 */
-		/*	CSI3130: no need for early finish as we have no blocking effect	
+		/* CSI3130 COMMENTED OUT ORIGINAL CODE
 		if (node->js.jointype == JOIN_LEFT ||
-			(outerNode->plan->startup_cost < hashNode->ps.plan->total_cost &&
+			(outerHashNode->ps.plan->startup_cost < innerHashNode->ps.plan->total_cost &&
 			 !node->hj_OuterNotEmpty))
 		{
-			node->hj_FirstOuterTupleSlot = ExecProcNode(outerNode);
+			node->hj_FirstOuterTupleSlot = ExecProcNode((PlanState *)outerHashNode);
 			if (TupIsNull(node->hj_FirstOuterTupleSlot))
 			{
 				node->hj_OuterNotEmpty = false;
@@ -151,289 +153,236 @@ ExecHashJoin(HashJoinState *node)
 				node->hj_OuterNotEmpty = true;
 		}
 		else
-			node->hj_FirstOuterTupleSlot = NULL;
-		*/		
+			node->hj_FirstOuterTupleSlot = NULL; 
+		*/
+
 		/*
 		 * create the hash table
 		 */
-		
-		//CSI3130
-		inner_hashtable = ExecHashTableCreate((Hash *) inner_hashNode->ps.plan,
-										node->hj_HashOperators);		
-		node->inner_hj_HashTable = inner_hashtable;
-		
-		outer_hashtable = ExecHashTableCreate((Hash *) outer_hashNode->ps.plan,
-										node->hj_HashOperators);		
-		node->outer_hj_HashTable = outer_hashtable;
+		innerHashtable = ExecHashTableCreate((Hash *) innerHashNode->ps.plan, node->hj_HashOperators);
+		node->hj_InnerHashTable = innerHashtable;
+
+        outerHashtable = ExecHashTableCreate((Hash *) outerHashNode->ps.plan, node->hj_HashOperators); //CSI3130
+        node->hj_OuterHashTable = outerHashtable; //CSI3130
+
 
 		/*
 		 * execute the Hash node, to build the hash table
 		 */
-		inner_hashNode->hashtable = inner_hashtable; //CSI3130
-		outer_hashNode->hashtable = outer_hashtable; //CSi3130
-		
-		// CSI3130
-		// (void) MultiExecProcNode((PlanState *) hashNode);
+		innerHashNode->hashtable = innerHashtable; //CSI3130
+		outerHashNode->hashtable = outerHashtable; //CSI3130
+
+		/* (void) MultiExecProcNode((PlanState *) hashNode); */
 
 		/*
 		 * If the inner relation is completely empty, and we're not doing an
 		 * outer join, we can quit without scanning the outer relation.
 		 */
-		// CSI3130
-		// if (hashtable->totalTuples == 0 && node->js.jointype != JOIN_LEFT)
-		// 	return NULL;
-
+		/* if (hashtable->totalTuples == 0 && node->js.jointype != JOIN_LEFT)
+			return NULL;*/
 		/*
 		 * need to remember whether nbatch has increased since we began
 		 * scanning the outer relation
 		 */
-		// CSI3130
-		// hashtable->nbatch_outstart = hashtable->nbatch;
+		/* hashtable->nbatch_outstart = hashtable->nbatch; */
 
 		/*
 		 * Reset OuterNotEmpty for scan.  (It's OK if we fetched a tuple
 		 * above, because ExecHashJoinOuterGetTuple will immediately
 		 * set it again.)
 		 */
-		// CSI3130
-		// node->hj_OuterNotEmpty = false;
+		 /* node->hj_OuterNotEmpty = false; */
 	}
 
 	/*
-	 * run the hash join process
+	 * CSI3130 run the hash join process
 	 */
-	
-	//CSI3130
-	for (;;)
-	{
-		/*
-		 * If we don't have an outer tuple, get the next one
-		 */
-		
-		if ((node->hj_NeedNewInner || node->inner_exhausted) && (node->hj_NeedNewOuter || node->outer_exhausted))
-		{
-			if (!node->inner_exhausted) {
+	for (;;) {
+		if (!node->hj_innerExhausted || !node->hj_outerExhausted) {
+			if (node->hj_innerExhausted) {
+				node->hj_fetchingFromInner = false;
+			}
+			if (node->hj_outerExhausted){
+				node->hj_fetchingFromInner = true;
+			}
+			if (node->hj_fetchingFromInner) {
+				elog(WARNING, "Looking for next Inner");
+			} else {
+				elog(WARNING, "Looking for next Outer");
+			}
 
-				innerTupleSlot = ExecProcNode((PlanState*)inner_hashNode);
-				node->isNextFetchInner=false;
-				node->js.ps.ps_InnerTupleSlot = innerTupleSlot;
+			// Try the next inner tuple
+			if (!node->hj_innerExhausted && node->hj_NeedNewInner && node->hj_fetchingFromInner) {
+				innerTupleSlot = ExecProcNode((PlanState *) innerHashNode);
+				node->js.ps.ps_InnerTupleSlot = innerTupleSlot;	
 				
-				if (!TupIsNull(innerTupleSlot)){
-					node->hj_NeedNewInner=false;
-					bool isNullAttr;
+				if (!TupIsNull(innerTupleSlot)) {
+					elog(WARNING,"processing next inner tuple");
+					node->hj_NeedNewInner = false;
 					
-					//get hash value
-					ExprContext *econtext = node->js.ps.ps_ExprContext;
+					// Set the econtext, a lot of functions can only see the tuple if put into econtext
+					econtext = node->js.ps.ps_ExprContext;
 					econtext->ecxt_innertuple = innerTupleSlot;
-					hashvalue = ExecHashGetHashValue(outer_hashtable, econtext,
-												  node->hj_InnerHashKeys);
+
+					// Get hash values of inner tuple
+					hashvalue = ExecHashGetHashValue(outerHashtable, econtext, node->hj_InnerHashKeys);
+					elog(WARNING, "computed the hash value of next inner tuple");
+					
+					// Reset the current inner tuple
 					node->js.ps.ps_InnerTupleSlot = innerTupleSlot;
-					econtext->ecxt_innertuple = innerTupleSlot;
-					
-					node->inner_hj_CurHashValue = hashvalue;
-					ExecHashGetBucketAndBatch(outer_hashtable, hashvalue,
-										  &node->outer_hj_CurBucketNo, &batchno);
-					node->outer_hj_CurTuple = NULL;		//reset current tuple in bucket in outer hash table
+					// Set the econtext
+					econtext->ecxt_innertuple = node->js.ps.ps_InnerTupleSlot;
+
+					// Find corresponding bucket
+					node->hj_InnerCurHashValue = hashvalue;
+					ExecHashGetBucketAndBatch(outerHashtable, hashvalue, &node->hj_OuterCurBucketNo, &batchno); // &batchno -> 0 or 1
+					node->hj_OuterCurTuple = NULL;	
+					elog(WARNING, "set outer current tuple to NULL");			
 				} else {
-					node->inner_exhausted = true;
+					elog(WARNING,"inner exhausted");
+					node->hj_innerExhausted = true;	
 				}
 			}
-		
-			//now retrieve next outer
-			if (!node->outer_exhausted) {
-			
-				outerTupleSlot = ExecProcNode((PlanState*)outer_hashNode);
-				node->isNextFetchInner=true;
-				node->js.ps.ps_OuterTupleSlot = outerTupleSlot;
-				
-				if (!TupIsNull(outerTupleSlot))
-				{
-					node->hj_NeedNewOuter=false;
-					bool isNullAttr;
+	
+			// Try the next outer tuple very similar to above   
+			if (!node->hj_outerExhausted && node->hj_NeedNewOuter  && !node->hj_fetchingFromInner) {
+            	outerTupleSlot = ExecProcNode((PlanState *) outerHashNode);
+                node->js.ps.ps_OuterTupleSlot = outerTupleSlot;
 
-					//get hash value
-					node->hj_OuterNotEmpty = true;
+                if (!TupIsNull(outerTupleSlot)) {
+                    elog(WARNING, "processing next outer tuple");
+                    node->hj_NeedNewOuter = false;
+
+                    // Set the econtext, a lot of functions can only see the tuple if put into econtext
+                    econtext = node->js.ps.ps_ExprContext;
+                    econtext->ecxt_outertuple = outerTupleSlot;
+
+                    // Get hash values of inner tuple
+                    hashvalue = ExecHashGetHashValue(innerHashtable, econtext, node->hj_OuterHashKeys);
+					elog(WARNING, "computed the hash value of next outer tuple");
+
+                    // Reset the current outer tuple
+                    node->js.ps.ps_OuterTupleSlot = outerTupleSlot;
+                    econtext->ecxt_outertuple = node->js.ps.ps_OuterTupleSlot;
+
+                    // Find corresponding bucket
+                    node->hj_OuterCurHashValue = hashvalue;
+                    ExecHashGetBucketAndBatch(innerHashtable, hashvalue, &node->hj_InnerCurBucketNo, &batchno); // &batchno -> 0 or 1
+                    node->hj_InnerCurTuple = NULL;
+					elog(WARNING,"set inner current tuple to NULL");		
+                } else {
+                    elog(WARNING,"outer exhausted");
+                    node->hj_outerExhausted = true;
+                }
+			}
+		
+			// Check if both outer and inner tables are empty	
+			if (node->hj_innerExhausted && node->hj_outerExhausted) {
+				elog(WARNING, "outer AND inner nodes are exhausted");
+				return NULL;
+			}
+	
+			// Probe inner table for matches
+			if (!TupIsNull(node->js.ps.ps_InnerTupleSlot) && node->hj_fetchingFromInner) {
+				elog(WARNING,"probe for inner tuple matches");
+	 			for (;;) {
 					ExprContext *econtext = node->js.ps.ps_ExprContext;
-					econtext->ecxt_outertuple = outerTupleSlot;
-					hashvalue = ExecHashGetHashValue(inner_hashtable, econtext,
-													  node->hj_OuterHashKeys);
-					
-					node->js.ps.ps_OuterTupleSlot = outerTupleSlot;
-					econtext->ecxt_outertuple = outerTupleSlot;
-					node->hj_MatchedOuter = false;		//for outer join
+					econtext->ecxt_innertuple = node->js.ps.ps_InnerTupleSlot;
+					curtuple = ExecScanHashBucket(node, econtext);
+					if (curtuple == NULL) {
+						node->hj_fetchingFromInner = false;
+						elog(WARNING,"out of inner matches");
+						break;
+					}
+					elog(WARNING,"got a match but still need to test non-hashed quals");
 
 					/*
-					 * now we have an outer tuple, find the corresponding bucket for
-					 * this tuple from the hash table
+					 * we've got a match, but still need to test non-hashed quals
 					 */
-					node->outer_hj_CurHashValue = hashvalue;
-					ExecHashGetBucketAndBatch(inner_hashtable, hashvalue,
-											  &node->inner_hj_CurBucketNo, &batchno);
-					node->inner_hj_CurTuple = NULL;		//reset current tuple in bucket in inner hash table
-					
-				} else {
-					node->outer_exhausted = true;
-				}
-			}	
-		}
-		
-		if (node->inner_exhausted && node->outer_exhausted)
-		{
-			/* end of join */			
-			printf("both inner (%f tuples) and outer (%f tuples) exhausted\n",inner_hashtable->totalTuples,outer_hashtable->totalTuples);
-			printf("Got %d matches by probing inner hash table\n",node->matches_by_probing_inner);
-			printf("Got %d matches by probing outer hash table\n",node->matches_by_probing_outer);
-			printf("Assuming outer is always probed first\n");
-				return NULL;
-		}
+					outtuple = ExecStoreTuple(curtuple, node->hj_OuterTupleSlot, InvalidBuffer, false);	/* don't pfree this tuple */
+					econtext->ecxt_outertuple = outtuple;
 
-		/*
-		 * OK, scan the selected hash bucket for matches
-		 */
-		
-		//use the current inner tuple,and probe outer hash table
-		if (!TupIsNull(node->js.ps.ps_InnerTupleSlot))
-		for(;;)
-		{
-			ExprContext *econtext = node->js.ps.ps_ExprContext;
-			econtext->ecxt_innertuple = node->js.ps.ps_InnerTupleSlot;
-			
-			curtuple = ExecScanHashBucket_probeouter(node, econtext);
-			if (curtuple == NULL)
-				break;		
-			
-			outtuple= ExecStoreTuple(curtuple,
-									  node->outer_hj_HashTupleSlot,
-									  InvalidBuffer,
-									  false);	/* don't pfree this tuple */
-			econtext->ecxt_outertuple = outtuple;
-			ResetExprContext(econtext);			
-			
-			if (!node->outer_exhausted && !node->hj_NeedNewOuter && !TupIsNull(node->js.ps.ps_OuterTupleSlot) && ItemPointerGetBlockNumber(&curtuple->t_data->t_ctid) == ItemPointerGetBlockNumber(&node->js.ps.ps_OuterTupleSlot->tts_tuple->t_data->t_ctid) 
-				&& ItemPointerGetOffsetNumber(&curtuple->t_data->t_ctid) == ItemPointerGetOffsetNumber(&node->js.ps.ps_OuterTupleSlot->tts_tuple->t_data->t_ctid)){
-			}
-			else if (joinqual == NIL || ExecQual(joinqual, econtext, false))
-			{
+					/* reset temp memory each time to avoid leaks from qual expr */
+					ResetExprContext(econtext);
 
-				if (otherqual == NIL || ExecQual(otherqual, econtext, false))
-				{
-					TupleTableSlot *result;
-
-					result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
-
-					if (isDone != ExprEndResult)
-					{
-						node->matches_by_probing_outer++;						
-						node->js.ps.ps_TupFromTlist =
-							(isDone == ExprMultipleResult);
-						return result;
+					/*
+					 * if we pass the qual, then save state for next call and have
+					 * ExecProject form the projection, store it in the tuple table,
+					 * and return the slot.
+					 *
+					 * Only the joinquals determine MatchedOuter status, but all quals
+					 * must pass to actually return the tuple.
+					 */
+					if (joinqual == NIL || ExecQual(joinqual, econtext, false)) {
+						if (otherqual == NIL || ExecQual(otherqual, econtext, false)) {
+							TupleTableSlot *result;
+							result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);									
+							if (isDone != ExprEndResult) {
+								node->hj_foundByProbingOuter=node->hj_foundByProbingOuter+1;
+								node->js.ps.ps_TupFromTlist = (isDone == ExprMultipleResult);
+								elog(WARNING,"**RESULT**");
+								return result;
+							}
+						}
 					}
 				}
+				node->hj_NeedNewInner = true;
+				node->js.ps.ps_InnerTupleSlot = NULL;
+				node->hj_fetchingFromInner = false;
+				continue;
 			}
-		}
-		
-		node->hj_NeedNewInner = true;
-		node->js.ps.ps_InnerTupleSlot=NULL;
-		
-		//use the current outer tuple,and probe inner hash table
-		if (!TupIsNull(node->js.ps.ps_OuterTupleSlot))
-		for (;;)
-		{
-			ExprContext *econtext = node->js.ps.ps_ExprContext;
-			econtext->ecxt_outertuple = node->js.ps.ps_OuterTupleSlot;
-			
-			curtuple = ExecScanHashBucket_probeinner(node, econtext);
-			if (curtuple == NULL)
-				break;			/* out of matches */
 
-			/*
-			 * we've got a match, but still need to test non-hashed quals
-			 */
-			inntuple = ExecStoreTuple(curtuple,
-									  node->inner_hj_HashTupleSlot,
-									  InvalidBuffer,
-									  false);	/* don't pfree this tuple */
-			econtext->ecxt_innertuple = inntuple;
-
-			/* reset temp memory each time to avoid leaks from qual expr */
-			ResetExprContext(econtext);
-
-			/*
-			 * if we pass the qual, then save state for next call and have
-			 * ExecProject form the projection, store it in the tuple table,
-			 * and return the slot.
-			 *
-			 * Only the joinquals determine MatchedOuter status, but all quals
-			 * must pass to actually return the tuple.
-			 */
-			if (joinqual == NIL || ExecQual(joinqual, econtext, false))
-			{
-				node->hj_MatchedOuter = true;
-
-				if (otherqual == NIL || ExecQual(otherqual, econtext, false))
-				{
-					TupleTableSlot *result;
-
-					result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
-					if (isDone != ExprEndResult)
-					{
-						node->matches_by_probing_inner++;						
-						node->js.ps.ps_TupFromTlist =
-							(isDone == ExprMultipleResult);
-						return result;
+            /* probe for outer tuple matches*/
+            if (!TupIsNull(node->js.ps.ps_OuterTupleSlot) && !node->hj_fetchingFromInner) {
+ 				elog(WARNING,"probe for outer tuple matches");                               
+				for (;;) {
+                    ExprContext *econtext = node->js.ps.ps_ExprContext;
+                    econtext->ecxt_outertuple = node->js.ps.ps_OuterTupleSlot;
+                    curtuple = ExecScanHashBucket(node, econtext);
+					if (curtuple == NULL) {
+ 						node->hj_fetchingFromInner = true;
+						elog(WARNING,"out of outer matches");
+						break;			
 					}
-				}
+					elog(WARNING,"got a match but still need to test non-hashed quals");
+                    /*
+					 * we've got a match, but still need to test non-hashed quals
+					 */
+                    inntuple = ExecStoreTuple(curtuple, node->hj_InnerTupleSlot, InvalidBuffer, false); /* don't pfree this tuple */
+                    econtext->ecxt_innertuple = inntuple;
 
-				/*
-				 * If we didn't return a tuple, may need to set NeedNewOuter
-				 */
-				if (node->js.jointype == JOIN_IN)
-				{
-					node->hj_NeedNewOuter = true;
-					break;		/* out of loop over hash bucket */
-				}
-			}
-		}
+                    /* reset temp memory each time to avoid leaks from qual expr */
+                    ResetExprContext(econtext);
 
-		/*
-		 * Now the current outer tuple has run out of matches, so check
-		 * whether to emit a dummy outer-join tuple. If not, loop around to
-		 * get a new outer tuple.
-		 */
-		node->hj_NeedNewOuter = true;
-		node->js.ps.ps_OuterTupleSlot=NULL;
-		
-		node->hj_OuterNotEmpty = false;
-		
-		if (!node->hj_MatchedOuter &&
-			node->js.jointype == JOIN_LEFT)
-		{
-			/*
-			 * We are doing an outer join and there were no join matches for
-			 * this outer tuple.  Generate a fake join tuple with nulls for
-			 * the inner tuple, and return it if it passes the non-join quals.
-			 */
-			econtext->ecxt_innertuple = node->hj_NullInnerTupleSlot;
-
-			if (ExecQual(otherqual, econtext, false))
-			{
-				/*
-				 * qualification was satisfied so we project and return the
-				 * slot containing the result tuple using ExecProject().
-				 */
-				TupleTableSlot *result;
-
-				result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
-
-				if (isDone != ExprEndResult)
-				{
-					node->js.ps.ps_TupFromTlist =
-						(isDone == ExprMultipleResult);
-					return result;
-				}
-			}
+                    /*
+					 * if we pass the qual, then save state for next call and have
+					 * ExecProject form the projection, store it in the tuple table,
+					 * and return the slot.
+					 *
+					 * Only the joinquals determine MatchedOuter status, but all quals
+					 * must pass to actually return the tuple.
+					 */
+                    if (joinqual == NIL || ExecQual(joinqual, econtext, false)) {
+                        if (otherqual == NIL || ExecQual(otherqual, econtext, false)) {
+                            TupleTableSlot *result;
+							result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
+                            if (isDone != ExprEndResult) {
+                                node->hj_foundByProbingInner = node->hj_foundByProbingInner+1;
+                                node->js.ps.ps_TupFromTlist = (isDone == ExprMultipleResult);
+								elog(WARNING,"**RESULT**");
+                                return result; 
+                            }
+                        }
+                    }
+		        }
+                node->hj_NeedNewOuter = true;
+                node->js.ps.ps_OuterTupleSlot = NULL;
+  				node->hj_fetchingFromInner = true;
+				continue;
+            }
 		}
 	}
+	return NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -446,8 +395,9 @@ HashJoinState *
 ExecInitHashJoin(HashJoin *node, EState *estate)
 {
 	HashJoinState *hjstate;
-	Hash	   *outer_hashNode; //CSI3130
-	Hash	   *inner_hashNode; //CSI3130
+
+    Hash       *outerHashNode; //CSI3130
+    Hash       *innerHashNode; //CSI3130
 	List	   *lclauses;
 	List	   *rclauses;
 	List	   *hoperators;
@@ -455,14 +405,13 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 
 	/*
 	 * create state structure
-	 */
+	*/	
 	hjstate = makeNode(HashJoinState);
 	hjstate->js.ps.plan = (Plan *) node;
 	hjstate->js.ps.state = estate;
 
 	/*
-	 * Miscellaneous initialization
-	 *
+	 * Miscellaneous initialization 
 	 * create expression context for node
 	 */
 	ExecAssignExprContext(estate, &hjstate->js.ps);
@@ -487,11 +436,11 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 	/*
 	 * initialize child nodes
 	 */
-	outer_hashNode =(Hash *) outerPlan(node);
-	inner_hashNode = (Hash *) innerPlan(node);
+    outerHashNode = (Hash *) outerPlan(node); //CSI3130
+    innerHashNode = (Hash *) innerPlan(node); //CSI3130
 
-	innerPlanState(hjstate) = ExecInitNode((Plan*) inner_hashNode, estate); //CSI3130
-	outerPlanState(hjstate) = ExecInitNode((Plan*) outer_hashNode, estate); //CSi3130
+    outerPlanState(hjstate) = ExecInitNode((Plan *) outerHashNode, estate); //CSI3130
+    innerPlanState(hjstate) = ExecInitNode((Plan *) innerHashNode, estate); //CSI3130
 
 #define HASHJOIN_NSLOTS 3
 
@@ -500,8 +449,8 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 	 */
 	ExecInitResultTupleSlot(estate, &hjstate->js.ps);
 	hjstate->hj_OuterTupleSlot = ExecInitExtraTupleSlot(estate);
-	hjstate->hj_InnerTupleSlot = ExecInitExtraTupleSlot(estate); //CSI3130
-	hjstate->isNextFetchInner  = false; //CSI3130
+	hjstate->hj_InnerTupleSlot = ExecInitExtraTupleSlot(estate); //CSI3130	
+
 	switch (node->join.jointype)
 	{
 		case JOIN_INNER:
@@ -509,12 +458,12 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 			break;
 		case JOIN_LEFT:
 			hjstate->hj_NullInnerTupleSlot =
-				ExecInitNullTupleSlot(estate,
-								 ExecGetResultType(innerPlanState(hjstate)));
+			ExecInitNullTupleSlot(estate,
+			ExecGetResultType(innerPlanState(hjstate)));
 			break;
 		default:
 			elog(ERROR, "unrecognized join type: %d",
-				 (int) node->join.jointype);
+			(int) node->join.jointype);
 	}
 
 	/*
@@ -524,17 +473,16 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 	 * the hash join node uses ExecScanHashBucket() to get at the contents of
 	 * the hash table.	-cim 6/9/91
 	 */
-	{
-		HashState  *hashstate = (HashState *) innerPlanState(hjstate);
-		TupleTableSlot *slot = hashstate->ps.ps_ResultTupleSlot;
 
-		hjstate->inner_hj_HashTupleSlot = slot; //CSI3130
-		
-		hashstate = (HashState *) outerPlanState(hjstate); //CSi3130
+    {
+	    HashState  *hashstate = (HashState *) innerPlanState(hjstate);
+	    TupleTableSlot *slot = hashstate->ps.ps_ResultTupleSlot;
+	    hjstate->hj_InnerHashTupleSlot = slot;
+	    
+		hashstate = (HashState *) outerPlanState(hjstate); //CSI3130 
 		slot = hashstate->ps.ps_ResultTupleSlot; //CSI3130
-
-		hjstate->outer_hj_HashTupleSlot = slot; //CSI3130
-	}
+		hjstate->hj_OuterHashTupleSlot = slot; //CSI3130
+    }
 
 	/*
 	 * initialize tuple type and projection info
@@ -545,29 +493,28 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 	ExecSetSlotDescriptor(hjstate->hj_OuterTupleSlot,
 						  ExecGetResultType(outerPlanState(hjstate)),
 						  false);
-	
-	//CSI3130
-	ExecSetSlotDescriptor(hjstate->hj_InnerTupleSlot,
+
+	ExecSetSlotDescriptor(hjstate->hj_InnerTupleSlot, 
 						  ExecGetResultType(innerPlanState(hjstate)),
-						  false);
+						  false); //CSI3130	
 
 	/*
 	 * initialize hash-specific info
 	 */
-	hjstate->inner_hj_HashTable = NULL; //CSI3130
-	hjstate->outer_hj_HashTable = NULL; //CSI3130
+
+	hjstate->hj_InnerHashTable = NULL;
 	hjstate->hj_FirstOuterTupleSlot = NULL;
+	hjstate->hj_OuterHashTable = NULL; //CSI3130
+	hjstate->hj_FirstInnerTupleSlot = NULL; //CSI3130
 
-	//CSI3130
-	hjstate->inner_hj_CurHashValue = 0;
-	hjstate->outer_hj_CurHashValue = 0;
-	hjstate->inner_hj_CurBucketNo = 0;
-	hjstate->outer_hj_CurBucketNo = 0;
-	hjstate->inner_hj_CurTuple = NULL;
-	hjstate->outer_hj_CurTuple = NULL;
-	hjstate->inner_exhausted=false;
-	hjstate->outer_exhausted=false;
+	hjstate->hj_InnerCurHashValue = 0;
+	hjstate->hj_InnerCurBucketNo = 0;
+	hjstate->hj_InnerCurTuple = NULL;
 
+    hjstate->hj_OuterCurHashValue = 0; //CSI3130
+    hjstate->hj_OuterCurBucketNo = 0; //CSI3130
+    hjstate->hj_OuterCurTuple = NULL; //CSI3130
+	
 	/*
 	 * Deconstruct the hash clauses into outer and inner argument values, so
 	 * that we can evaluate those subexpressions separately.  Also make a list
@@ -592,19 +539,28 @@ ExecInitHashJoin(HashJoin *node, EState *estate)
 	hjstate->hj_OuterHashKeys = lclauses;
 	hjstate->hj_InnerHashKeys = rclauses;
 	hjstate->hj_HashOperators = hoperators;
+
 	/* child Hash node needs to evaluate inner hash keys, too */
 	((HashState *) innerPlanState(hjstate))->hashkeys = rclauses;
-	((HashState *) outerPlanState(hjstate))->hashkeys = lclauses; //CSI3130
-	
+    ((HashState *) outerPlanState(hjstate))->hashkeys = lclauses; //CSI3130
+
 	hjstate->js.ps.ps_OuterTupleSlot = NULL;
 	hjstate->js.ps.ps_InnerTupleSlot = NULL; //CSI3130
 	hjstate->js.ps.ps_TupFromTlist = false;
 	hjstate->hj_NeedNewOuter = true;
 	hjstate->hj_NeedNewInner = true; //CSI3130
 	hjstate->hj_MatchedOuter = false;
-	hjstate->hj_OuterNotEmpty = false;
-	hjstate->matches_by_probing_inner = 0; //CSI3130
-	hjstate->matches_by_probing_outer = 0; //CSI3130
+
+	// CSI3130 COMMENTED OUT ORIGINAL CODE
+	/* hjstate->hj_OuterNotEmpty = false;
+	   hjstate->hj_InnerNotEmpty = false; */
+
+	hjstate->hj_innerExhausted = false; //CSI3130
+	hjstate->hj_outerExhausted = false; //CSI3130
+	hjstate->hj_foundByProbingInner = 0; //CSI3130
+	hjstate->hj_foundByProbingOuter = 0; //CSI3130
+	hjstate->hj_fetchingFromInner = true; //CSI3130
+
 	return hjstate;
 }
 
@@ -628,17 +584,17 @@ ExecEndHashJoin(HashJoinState *node)
 	/*
 	 * Free hash table
 	 */
-	// CSi3130
-	if (node->inner_hj_HashTable)
+	if (node->hj_InnerHashTable)
 	{
-		ExecHashTableDestroy(node->inner_hj_HashTable);
-		node->inner_hj_HashTable = NULL;
+		ExecHashTableDestroy(node->hj_InnerHashTable);
+		node->hj_InnerHashTable = NULL;
 	}
-	if (node->outer_hj_HashTable)
-	{
-		ExecHashTableDestroy(node->outer_hj_HashTable);
-		node->outer_hj_HashTable = NULL;
-	}
+    if (node->hj_OuterHashTable) //CSI3130
+    {
+        ExecHashTableDestroy(node->hj_OuterHashTable); //CSI3130
+        node->hj_OuterHashTable = NULL; //CSI3130
+    }
+
 	/*
 	 * Free the exprcontext
 	 */
@@ -648,10 +604,13 @@ ExecEndHashJoin(HashJoinState *node)
 	 * clean out the tuple table
 	 */
 	ExecClearTuple(node->js.ps.ps_ResultTupleSlot);
+	//ExecClearTuple(node->js.ps.ps_InnerTupleSlot); //CSI3130
+	//ExecClearTuple(node->js.ps.ps_OuterTupleSlot); //CSI3130
 	ExecClearTuple(node->hj_OuterTupleSlot);
-	ExecClearTuple(node->hj_InnerTupleSlot);      //CSI3130
-	ExecClearTuple(node->inner_hj_HashTupleSlot); //CSI3130
-	ExecClearTuple(node->outer_hj_HashTupleSlot); //CSI3130
+	ExecClearTuple(node->hj_InnerTupleSlot); //CSI3130
+	ExecClearTuple(node->hj_InnerHashTupleSlot);
+	ExecClearTuple(node->hj_OuterHashTupleSlot); //CSI3130
+
 	/*
 	 * clean up subtrees
 	 */
@@ -675,7 +634,7 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 						  HashJoinState *hjstate,
 						  uint32 *hashvalue)
 {
-	HashJoinTable hashtable = hjstate->inner_hj_HashTable; //CSI3130
+	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	int			curbatch = hashtable->curbatch;
 	TupleTableSlot *slot;
 
@@ -703,7 +662,7 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 											  hjstate->hj_OuterHashKeys);
 
 			/* remember outer relation is not empty for possible rescan */
-			hjstate->hj_OuterNotEmpty = true;
+			/*hjstate->hj_OuterNotEmpty = true; CSI3130*/
 
 			return slot;
 		}
@@ -745,7 +704,8 @@ ExecHashJoinOuterGetTuple(PlanState *outerNode,
 static int
 ExecHashJoinNewBatch(HashJoinState *hjstate)
 {
-	HashJoinTable hashtable = hjstate->inner_hj_HashTable; //CSI3130
+	/*CSI3130 commented out the function inners, but left definition to watch for dependencies
+	HashJoinTable hashtable = hjstate->hj_InnerHashTable;
 	int			nbatch;
 	int			curbatch;
 	BufFile    *innerFile;
@@ -757,16 +717,16 @@ start_over:
 	curbatch = hashtable->curbatch;
 
 	if (curbatch > 0)
-	{
+	{ */
 		/*
 		 * We no longer need the previous outer batch file; close it right
 		 * away to free disk space.
 		 */
-		if (hashtable->outerBatchFile[curbatch])
+	/*	if (hashtable->outerBatchFile[curbatch])
 			BufFileClose(hashtable->outerBatchFile[curbatch]);
 		hashtable->outerBatchFile[curbatch] = NULL;
 	}
-
+	*/
 	/*
 	 * We can always skip over any batches that are completely empty on both
 	 * sides.  We can sometimes skip over batches that are empty on only one
@@ -783,22 +743,22 @@ start_over:
 	 * scan, we have to rescan outer batches in case they contain tuples that
 	 * need to be reassigned.
 	 */
-	curbatch++;
+	/*
+ 	curbatch++;
 	while (curbatch < nbatch &&
 		   (hashtable->outerBatchFile[curbatch] == NULL ||
 			hashtable->innerBatchFile[curbatch] == NULL))
 	{
 		if (hashtable->outerBatchFile[curbatch] &&
 			hjstate->js.jointype == JOIN_LEFT)
-			break;				/* must process due to rule 1 */
+			break;				
 		if (hashtable->innerBatchFile[curbatch] &&
 			nbatch != hashtable->nbatch_original)
-			break;				/* must process due to rule 2 */
+			break;				
 		if (hashtable->outerBatchFile[curbatch] &&
 			nbatch != hashtable->nbatch_outstart)
-			break;				/* must process due to rule 3 */
-		/* We can ignore this batch. */
-		/* Release associated temp files right away. */
+			break;			
+
 		if (hashtable->innerBatchFile[curbatch])
 			BufFileClose(hashtable->innerBatchFile[curbatch]);
 		hashtable->innerBatchFile[curbatch] = NULL;
@@ -809,14 +769,14 @@ start_over:
 	}
 
 	if (curbatch >= nbatch)
-		return curbatch;		/* no more batches */
+		return curbatch;	
 
 	hashtable->curbatch = curbatch;
-
+*/
 	/*
 	 * Reload the hash table with the new inner batch (which could be empty)
 	 */
-	ExecHashTableReset(hashtable);
+/*	ExecHashTableReset(hashtable);
 
 	innerFile = hashtable->innerBatchFile[curbatch];
 
@@ -830,40 +790,42 @@ start_over:
 		while ((slot = ExecHashJoinGetSavedTuple(hjstate,
 												 innerFile,
 												 &hashvalue,
-												 hjstate->inner_hj_HashTupleSlot))) //CSI3130
-		{
+												 hjstate->hj_InnerHashTupleSlot)))
+		{*/
 			/*
 			 * NOTE: some tuples may be sent to future batches.  Also, it is
 			 * possible for hashtable->nbatch to be increased here!
 			 */
-			ExecHashTableInsert(hashtable,
+		/*	ExecHashTableInsert(hashtable,
 								ExecFetchSlotTuple(slot),
 								hashvalue);
 		}
-
+*/
 		/*
 		 * after we build the hash table, the inner batch file is no longer
 		 * needed
 		 */
-		BufFileClose(innerFile);
+/*		BufFileClose(innerFile);
 		hashtable->innerBatchFile[curbatch] = NULL;
 	}
-
+*/
 	/*
 	 * If there's no outer batch file, advance to next batch.
 	 */
-	if (hashtable->outerBatchFile[curbatch] == NULL)
+/*	if (hashtable->outerBatchFile[curbatch] == NULL)
 		goto start_over;
-
+*/
 	/*
 	 * Rewind outer batch file, so that we can start reading it.
 	 */
-	if (BufFileSeek(hashtable->outerBatchFile[curbatch], 0, 0L, SEEK_SET))
+/*	if (BufFileSeek(hashtable->outerBatchFile[curbatch], 0, 0L, SEEK_SET))
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not rewind hash-join temporary file: %m")));
 
-	return curbatch;
+	return curbatch;*/
+	
+	return 0;
 }
 
 /*
@@ -964,9 +926,9 @@ ExecReScanHashJoin(HashJoinState *node, ExprContext *exprCtxt)
 	 * inner subnode, then we can just re-use the existing hash table without
 	 * rebuilding it.
 	 */
-	if (node->inner_hj_HashTable != NULL) //CSI3130
+	if (node->hj_InnerHashTable != NULL)
 	{
-		if (node->inner_hj_HashTable->nbatch == 1 && //CSI3130
+		if (node->hj_InnerHashTable->nbatch == 1 &&
 			((PlanState *) node)->righttree->chgParam == NULL)
 		{
 			/*
@@ -981,13 +943,14 @@ ExecReScanHashJoin(HashJoinState *node, ExprContext *exprCtxt)
 			 * alone because ExecHashJoin will need it the first time
 			 * through.)
 			 */
-			node->hj_OuterNotEmpty = false;
+			//CSI3130
+			/*node->hj_OuterNotEmpty = false; */
 		}
 		else
 		{
 			/* must destroy and rebuild hash table */
-			ExecHashTableDestroy(node->inner_hj_HashTable); //CSI3130
-			node->inner_hj_HashTable = NULL; //CSI3130
+			ExecHashTableDestroy(node->hj_InnerHashTable);
+			node->hj_InnerHashTable = NULL;
 
 			/*
 			 * if chgParam of subnode is not null then plan will be re-scanned
@@ -997,12 +960,14 @@ ExecReScanHashJoin(HashJoinState *node, ExprContext *exprCtxt)
 				ExecReScan(((PlanState *) node)->righttree, exprCtxt);
 		}
 	}
-
+	
+	//CSI3130 Commented out original code
 	/* Always reset intra-tuple state */
-	node->outer_hj_CurHashValue = 0; //CSI3130
-	node->inner_hj_CurBucketNo = 0; //CSI3130
-	node->inner_hj_CurTuple = NULL; //CSI3130
-
+	/*node->hj_InnerCurHashValue = 0;
+	node->hj_InnerCurBucketNo = 0;
+	node->hj_InnerCurTuple = NULL;
+	*/
+	
 	node->js.ps.ps_OuterTupleSlot = NULL;
 	node->js.ps.ps_TupFromTlist = false;
 	node->hj_NeedNewOuter = true;
