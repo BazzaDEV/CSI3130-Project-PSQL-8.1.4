@@ -278,7 +278,12 @@ ExecHashJoin(HashJoinState *node)
 		
 			// Check if both outer and inner tables are empty	
 			if (node->hj_innerExhausted && node->hj_outerExhausted) {
-				elog(WARNING, "outer AND inner nodes are exhausted");
+				/* CSI 3130 begin */
+				elog(WARNING, "both inner (%f tuples) and outer (%f tuples) exhausted\n", innerHashtable->totalTuples, outerHashtable->totalTuples);
+				elog(WARNING, "Got %d matches by probing inner hash table\n",node->hj_foundByProbingInner);
+				elog(WARNING, "Got %d matches by probing outer hash table\n",node->hj_foundByProbingOuter);
+				elog(WARNING, "Assuming outer is always probed first\n");
+				/* CSI 3130 end */
 				return NULL;
 			}
 	
