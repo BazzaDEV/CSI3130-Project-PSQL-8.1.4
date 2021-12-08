@@ -45,20 +45,20 @@ TupleTableSlot *				/* return: a tuple or NULL */
 ExecHashJoin(HashJoinState *node)
 {
 	EState	   *estate;
-	HashState  *outerHashNode; //CSI3130
-	HashState  *innerHashNode; //CSI3130
+	HashState  *outerHashNode; /*CSI3130*/
+	HashState  *innerHashNode; /*CSI3130*/
 	List	   *joinqual;
 	List	   *otherqual;
 
 	TupleTableSlot *inntuple;
-	TupleTableSlot *outtuple; //CSI3130
+	TupleTableSlot *outtuple; /*CSI3130*/
 	ExprContext *econtext;
 	ExprDoneCond isDone;
-	HashJoinTable innerHashtable; //CSI3130
-	HashJoinTable outerHashtable; //CSI3130
+	HashJoinTable innerHashtable; /*CSI3130*/
+	HashJoinTable outerHashtable; /*CSI3130*/
 	
 	HeapTuple	curtuple;
-	TupleTableSlot *innerTupleSlot; //CSI3130
+	TupleTableSlot *innerTupleSlot; /*CSI3130*/
 	TupleTableSlot *outerTupleSlot;
 	uint32	hashvalue;
 	int	batchno;
@@ -69,14 +69,14 @@ ExecHashJoin(HashJoinState *node)
 	estate = node->js.ps.state;
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
-	innerHashNode = (HashState *) innerPlanState(node); //CSI3130
-	outerHashNode = (HashState *) outerPlanState(node); //CSI3130
+	innerHashNode = (HashState *) innerPlanState(node); /*CSI3130*/
+	outerHashNode = (HashState *) outerPlanState(node); /*CSI3130*/
 
 	/*
 	 * get information from HashJoin state
 	 */
-	innerHashtable = node->hj_InnerHashTable; //CSI3130
-	outerHashtable = node->hj_OuterHashTable; //CSI3130
+	innerHashtable = node->hj_InnerHashTable; /*CSI3130*/
+	outerHashtable = node->hj_OuterHashTable; /*CSI3130*/
 	econtext = node->js.ps.ps_ExprContext;
 
 	/*
